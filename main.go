@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 )
@@ -10,12 +11,35 @@ type Url struct {
 	Short string `json:"short"`
 }
 
-func HelloHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprint(w, "Hello World!")
+func ShortenHandler(w http.ResponseWriter, r *http.Request) {
+	var data Url
+	if r.Method != http.MethodPost {
+		http.Error(w, "Only POST is allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
+		http.Error(w, "Bad JSON", http.StatusBadRequest)
+		return
+	}
+	if data.Long == "" {
+		http.Error(w, "Url is required", http.StatusBadRequest)
+		return
+	}
+	result := generateKey(67)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+func generateKey(n int) string {
+	const alphanumeric = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+	return "abc123"
 }
 
 func main() {
-	http.HandleFunc("/", HelloHandler)
+	http.HandleFunc("/shorten", ShortenHandler)
 
 	fmt.Println("Listening and serving on:8080")
 
