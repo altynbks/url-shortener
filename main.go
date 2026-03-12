@@ -1,117 +1,147 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math/rand/v2"
 	"net/http"
-	"sync"
+	"os"
+
+	"github.com/jackc/pgx/v5"
 )
 
-type Url struct {
+type URL struct {
 	Long  string `json:"long"`
 	Short string `json:"short"`
 }
 
-type UrlStore struct {
-	urls map[string]string
-	mu   sync.RWMutex
+type URLStore struct {
+	conn *pgx.Conn
 }
 
 type Server struct {
-	store *UrlStore
+	store *URLStore
 }
 
 func (s *Server) ShortenHandler(w http.ResponseWriter, r *http.Request) {
-	var data Url
 	if r.Method != http.MethodPost {
-		http.Error(w, "Only POST is allowed", http.StatusMethodNotAllowed)
+		http.Error(w, "only POST method is allowed", http.StatusMethodNotAllowed)
 		return
 	}
 
+	defer r.Body.Close()
+
+	var data URL
 	if err := json.NewDecoder(r.Body).Decode(&data); err != nil {
-		http.Error(w, "Bad JSON", http.StatusBadRequest)
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
+
 	if data.Long == "" {
-		http.Error(w, "Url is required", http.StatusBadRequest)
+		http.Error(w, "URL is required", http.StatusBadRequest)
 		return
 	}
 
 	key := s.store.Set(data.Long)
+	if key == "" {
+		http.Error(w, "failed to create short URL", http.StatusInternalServerError)
+		return
+	}
+
 	data.Short = key
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(data)
 }
 
 func (s *Server) RedirectHandler(w http.ResponseWriter, r *http.Request) {
-	if len(r.URL.Path) < 4 {
-		http.Error(w, "Invalid ID", http.StatusBadRequest)
+	if len(r.URL.Path) <= 3 {
+		http.Error(w, "invalid short URL", http.StatusBadRequest)
 		return
 	}
+
 	shortKey := r.URL.Path[3:]
+
 	longURL, ok := s.store.Get(shortKey)
 	if !ok {
 		http.Error(w, "URL not found", http.StatusNotFound)
 		return
 	}
+
 	http.Redirect(w, r, longURL, http.StatusFound)
 }
 
 func generateKey(n int) string {
 	alphanumeric := "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 	res := make([]byte, n)
+
 	for i := range res {
 		randomIndex := rand.IntN(len(alphanumeric))
-		selected := alphanumeric[randomIndex]
-		res[i] = selected
+		res[i] = alphanumeric[randomIndex]
 	}
+
 	return string(res)
 }
 
-func NewUrlStore() *UrlStore {
-	return &UrlStore{
-		urls: make(map[string]string),
+func NewURLStore(conn *pgx.Conn) *URLStore {
+	return &URLStore{
+		conn: conn,
 	}
 }
 
-func (s *UrlStore) Set(longURL string) string {
-	// 1. Заблокируй на запись
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	// 2. Сгенерируй ключ через свою функцию generateKey
+func (s *URLStore) Set(longURL string) string {
 	key := generateKey(6)
-	// 3. Сохрани в s.urls
-	s.urls[key] = longURL
-	// 4. Верни ключ
+
+	query := `INSERT INTO urls (short_key, long_url) VALUES ($1, $2)`
+
+	_, err := s.conn.Exec(context.Background(), query, key, longURL)
+	if err != nil {
+		fmt.Printf("database insert error: %v\n", err)
+		return ""
+	}
+
 	return key
 }
 
-func (s *UrlStore) Get(shortKey string) (string, bool) {
-	// 1. Заблокируй на ЧТЕНИЕ (RLock)
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	// 2. Достань ссылку из мапы
-	val, ok := s.urls[shortKey]
-	if ok {
-		return val, true
+func (s *URLStore) Get(shortKey string) (string, bool) {
+	var longURL string
+
+	query := `SELECT long_url FROM urls WHERE short_key = $1`
+
+	err := s.conn.QueryRow(context.Background(), query, shortKey).Scan(&longURL)
+	if err != nil {
+		return "", false
 	}
-	// 3. Верни ссылку и флаг "найдено/не найдено"
-	return "", false
+
+	return longURL, true
 }
 
 func main() {
-	store := NewUrlStore()
+	ctx := context.Background()
 
-	srv := &Server{
-		store: store,
+	connStr := os.Getenv("DATABASE_URL")
+	if connStr == "" {
+		fmt.Println("DATABASE_URL environment variable is not set")
+		return
 	}
+
+	conn, err := pgx.Connect(ctx, connStr)
+	if err != nil {
+		fmt.Printf("failed to connect to the database: %v\n", err)
+		return
+	}
+	defer conn.Close(ctx)
+
+	store := NewURLStore(conn)
+	srv := &Server{store: store}
+
 	http.HandleFunc("/shorten", srv.ShortenHandler)
 	http.HandleFunc("/r/", srv.RedirectHandler)
 
-	fmt.Println("Listening and serving on:8080")
+	fmt.Println("Server is running on :8080")
 
 	if err := http.ListenAndServe(":8080", nil); err != nil {
-		fmt.Println(err)
+		fmt.Println("server error:", err)
 	}
 }
