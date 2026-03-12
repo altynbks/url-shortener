@@ -9,6 +9,7 @@ import (
 	"os"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/joho/godotenv"
 )
 
 type URL struct {
@@ -119,13 +120,16 @@ func (s *URLStore) Get(shortKey string) (string, bool) {
 
 func main() {
 	ctx := context.Background()
+	err := godotenv.Load()
+	if err != nil {
+		fmt.Println("Error loading .env file")
+	}
 
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
 		fmt.Println("DATABASE_URL environment variable is not set")
 		return
 	}
-
 	conn, err := pgx.Connect(ctx, connStr)
 	if err != nil {
 		fmt.Printf("failed to connect to the database: %v\n", err)
@@ -133,11 +137,27 @@ func main() {
 	}
 	defer conn.Close(ctx)
 
+	createTableSQL := `
+    CREATE TABLE IF NOT EXISTS urls (
+        id SERIAL PRIMARY KEY,
+        short_key TEXT UNIQUE NOT NULL,
+        long_url TEXT NOT NULL
+    );`
+
+	_, err = conn.Exec(ctx, createTableSQL)
+	if err != nil {
+		fmt.Printf("Error creating the database: %v\n", err)
+		return
+	}
+
 	store := NewURLStore(conn)
 	srv := &Server{store: store}
 
 	http.HandleFunc("/shorten", srv.ShortenHandler)
 	http.HandleFunc("/r/", srv.RedirectHandler)
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFile(w, r, "index.html")
+	})
 
 	fmt.Println("Server is running on :8080")
 
