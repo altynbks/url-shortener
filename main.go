@@ -158,10 +158,14 @@ func main() {
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "index.html")
 	})
-
-	fmt.Println("Server is running on :8080")
-
-	if err := http.ListenAndServe(":8080", nil); err != nil {
-		fmt.Println("server error:", err)
+	port := os.Getenv("PORT")
+	if port == "" {
+	    port = "8080" 
+	}
+	
+	fmt.Printf("Server is running on :%s\n", port)
+	
+	if err := http.ListenAndServe(":"+port, nil); err != nil {
+	    fmt.Println("server error:", err)
 	}
 }
